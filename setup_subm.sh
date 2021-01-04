@@ -463,7 +463,7 @@ config_golang=${config_golang:-NO}
 config_aws_cli=${config_aws_cli:-NO}
 skip_deploy=${skip_deploy:-NO}
 skip_tests=${skip_tests:-NO}
-print_logs=${print_logs:-NO}
+print_logs=${print_logs:-yes}
 create_junit_xml=${create_junit_xml:-NO}
 upload_to_polarion=${upload_to_polarion:-NO}
 
