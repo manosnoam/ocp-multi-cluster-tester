@@ -70,16 +70,41 @@ function highlight()
 
 # ------------------------------------------
 
-function print_cmd_location() {
-  new_location="[$0] [${PWD##*/}]" && \
+function print_current_dir_and_cmd() {
+  # Get command to print, but skip printing if it's empty
+  local cmd="$(echo -e "$1" | xargs)"
+  [[ -n "$cmd" ]] || return
+
+  # Print PS1 prompt (and trim trailing and leading spaces)
+  local new_location="[$0] $PS1 [${PWD##*/}]" && \
   if [[ "$new_location" != "$current_location" ]]; then
     export current_location="$new_location"
-    echo -e "\n${CYAN}$current_location${NO_COLOR}\n"
+    echo -e "\n${YELLOW}$current_location${NO_COLOR}\n"
   fi
-  # Add PS1 prompt (and trim trailing and leading spaces)
-  prompt=$(eval 'echo -e "\n'$PS1'\n"' | sed -e 's#\\\[##g' -e 's#\\\\\]##g' | xargs)
-  prompt="${prompt:+"$prompt "}${1}"
-  echo -e "${CYAN}${prompt}${NO_COLOR}"
+
+  # Save all command variables' values inside $all_vars_output
+  local all_vars_output="\n"
+
+  # List simple variables ($v or ${v}) first
+  local var_list=( $(echo "$cmd" | grep -ohP "\\\$\w+|\\\$\{\w+\}" | sort -u || :) )
+
+  # List complex variables (with parameter expansion) next
+  var_list+=( $(echo "$cmd" | grep -ohP "\\\$\{\w+[:/][^\}]+\}" | sort -u || :) )
+
+  for variable in "${var_list[@]}" ; do
+     local var_name=$(echo ${variable%%[:/]*} | tr -d "\${}")
+     local var_value="${!var_name}"
+     if [[ "$variable" =~ [:/] ]] ; then
+       # For complex variables - add it to $all_vars_output
+       all_vars_output+="# ${var_name}=${var_value} \n"
+     else
+       # For simple variables - replace them with their values within $cmd
+       cmd="${cmd//$variable/$var_value}"
+     fi
+   done
+
+  # Print $all_vars_output (after # sign), and $cmd (after $ sign)
+  echo -e "${CYAN}${all_vars_output}\$ ${cmd}${NO_COLOR}"
 }
 
 # ------------------------------------------
@@ -88,28 +113,7 @@ function print_cmd_location() {
 function trap_to_debug_commands() {
   trap '
    if [[ ! "$BASH_COMMAND" =~ ^(echo|read|PROMPT|BUG|FATAL) ]] ; then
-     cmd_expanded="$BASH_COMMAND"
-     var_values="\n"
-
-     # List simple variables ($v or ${v}) first
-     var_list=( $(echo "$cmd_expanded" | grep -ohP "\\\$\w+|\\\$\{\w+\}" | sort -u || :) )
-
-     # List complex variables (with parameter expansion) next
-     var_list+=( $(echo "$cmd_expanded" | grep -ohP "\\\$\{\w+[:/][^\}]+\}" | sort -u || :) )
-
-     for variable in "${var_list[@]}" ; do
-        var_name=$(echo ${variable%%[:/]*} | tr -d "\${}")
-        value="${!var_name}"
-        if [[ "$variable" =~ [:/] ]] ; then
-          # For complex variables - add it to $var_values
-          var_values+="\$${var_name} = ${value} \n$"
-        else
-          # For simple variables - replace within $cmd_expanded
-          cmd_expanded="${cmd_expanded//$variable/$value}"
-        fi
-      done
-
-      print_cmd_location "${var_values}${cmd_expanded}" 2>/dev/null || :
+      print_current_dir_and_cmd "$BASH_COMMAND" 2>/dev/null || :
    fi
   ' DEBUG
 }
@@ -121,20 +125,22 @@ function trap_to_debug_commands() {
 
 # Function to trap test exit failure - to print more info before exiting main flow
 function trap_function_on_error() {
-  trap - DEBUG # DONT trap_to_debug_commands
+  trap '' DEBUG # DONT trap_to_debug_commands
 
   local func_on_script_error="$@"
 
   # If other traps already set - make sure to execute it after $func_on_script_error
   current_traps="$(trap -p EXIT | tr '\n' ' :; ' | cut -f2 -d \')"
 
-  trap_cmd='rc=$?; echo "# [$FUNCNAME[$@]] returned EXIT $rc:
+  trap_cmd='rc=$?; echo "# $FUNCNAME[$@] returned EXIT $rc:
   ${BASH_SOURCE[$i+1]}:$BASH_LINENO > ${BASH_SOURCE[$i]}:${BASH_LINENO[$i-1]}" ;
   [[ "$rc" = "0" ]] || ('${func_on_script_error}') || : ;
   [[ -z "'${current_traps}'" ]] || ('${current_traps}') || : ;'
 
   echo -e "\n# Trapping on script EXIT: \n${trap_cmd} \n"
-  trap "$trap_cmd" EXIT # ERR HUP INT TERM  # Trap any script termination (not just EXIT)
+  trap '(exit 130)' INT # When SIGINT is received call $trap_cmd
+  trap '(exit 143)' TERM # When SIGTERM is received call $trap_cmd
+  trap "$trap_cmd" EXIT
 
 }
 
@@ -142,7 +148,7 @@ function trap_function_on_error() {
 
 # function to watch for expected regex of command output, with retry attempts or timeout
 function watch_and_retry() {
-  # trap_to_debug_commands
+  # Do not trap_to_debug_commands
 
   # Param 1: Command to execute and watch
   CMD="$1"
@@ -154,12 +160,8 @@ function watch_and_retry() {
   # Max timeout for the whole watch process (default is 10 minutes)
   TIMEOUT=10m
 
-  # If REGEX was specified - will wait for REGEX to be found in CMD output
-  [[ -z "$REGEX" ]] || CMD="( $CMD ) | highlight '$REGEX'"
-
-  #echo -e "# Watching output of command: $(eval echo \"$CMD\") \
-  echo -e "# Watching output of command: $CMD \
-  \n# Search pattern (or exit code): $REGEX"
+  # echo -e "# Watching output of command: $(eval echo \"$CMD\") \
+  # echo -e "# Watching output of command: $CMD"
 
   # Set timeout for the whole process, if RETRY is number of seconds/minutes (e.g. 20s or 3m)
   if [[ "$RETRY" =~ [0-9]+[sm] ]] ; then
@@ -167,8 +169,15 @@ function watch_and_retry() {
     RETRY=-1
   fi
 
-  echo -e "# Retry attempts: $RETRY \
+  echo -e "# Watching output of command #
+  \n# Retry attempts: $RETRY
   \n# Timeout limit: $TIMEOUT"
+
+  # If REGEX was specified - will wait for REGEX to be found in CMD output
+  if [[ -n "$REGEX" ]] ; then
+    echo "# Search pattern: $REGEX"
+    CMD="( $CMD ) | highlight '$REGEX'"
+  fi
 
   # To use timeout - must run command as an external script
   timeout $TIMEOUT bash <<EOF \
@@ -211,6 +220,7 @@ function run_and_tail() {
   local process_rc=0
 
   # Tail the log, until command has ended or timed-out
+  mkdir -p "$(dirname "$log_to_tail")"
   touch "$log_to_tail"
   tail --pid=$pid -n0 -F "$log_to_tail"
 
@@ -332,6 +342,7 @@ function install_anaconda() {
 
   echo "# Installing Anaconda"
   # wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh
+  # miniconda_installer="Miniconda3-py38_4.9.2-Linux-x86_64.sh"
   miniconda_installer="Miniconda3-latest-Linux-x86_64.sh"
   download_file "https://repo.anaconda.com/miniconda/${miniconda_installer}" "${work_dir}/${miniconda_installer}"
   chmod +x "${work_dir}/${miniconda_installer}"
@@ -761,11 +772,10 @@ function delete_namespace_and_crds() {
   trap_to_debug_commands;
   # Input $1 : Namespace to delete
   # Input $2 (Optional) : All CRDs to delete, by searching for *crd_name*
-  ns_name=$1
-  crd_name=$2
-  delete_namespace=FALSE
-  delete_crds=FALSE
-  force_ns_delete=FALSE
+  local ns_name=$1
+  local crd_name=$2
+
+  local delete_crds=FALSE
 
   if [[ -n $crd_name ]] ; then
     echo "# Searching for existing CRDs of previous ${crd_name} installation on the cluster:"
@@ -778,9 +788,6 @@ function delete_namespace_and_crds() {
       crd_list=$(${OC} get crds -o name | grep -Po "\/\K.*${crd_name}.*")
       # Ignoring hanged CRDs on delete, due to K8s bug: https://github.com/kubernetes/kubernetes/issues/60538
       ${OC} delete --timeout=10s crds $crd_list --ignore-not-found || : # || : to ignore none-zero exit code
-          # customresourcedefinition.apiextensions.k8s.io "clusters.submariner.io" deleted
-          # customresourcedefinition.apiextensions.k8s.io "endpoints.submariner.io" deleted
-          # customresourcedefinition.apiextensions.k8s.io "submariners.submariner.io" deleted
     fi
   fi
 
@@ -794,19 +801,31 @@ function delete_namespace_and_crds() {
     return
   else
     echo "# Deleting whole namespace ${ns_name} from the cluster"
-    ${OC} delete --timeout=30s namespace ${ns_name} --ignore-not-found || force_ns_delete=TRUE
-
-    if [[ "$force_ns_delete" = TRUE && $(${OC} get namespace ${ns_name}) ]]; then
-      echo "# Warning: Force delete of namespace via API"
-      ${OC} proxy &
-      ${OC} get namespace ${ns_name} -o json | jq '.spec = {"finalizers":[]}' > temp.json
-      curl -k -H "Content-Type: application/json" -X PUT --data-binary @temp.json 127.0.0.1:8001/api/v1/namespaces/${ns_name}/finalize
-      kill -9 %% || :
-      ${OC} delete namespace ${ns_name} --ignore-not-found --grace-period=0 --force --wait || :
-    fi
+    force_delete_namespace "${ns_name}"
   fi
 }
 
+
+# ------------------------------------------
+
+# Function to force delete namespace
+function force_delete_namespace() {
+  trap_to_debug_commands;
+  # Input $1 : Namespace to delete
+  ns_name=$1
+
+  ${OC} delete --timeout=30s namespace ${ns_name} --ignore-not-found || force_ns_delete=TRUE
+
+  if [[ "$force_ns_delete" = TRUE && $(${OC} get namespace ${ns_name}) ]]; then
+    echo "# Warning: Force delete of namespace via API"
+    ${OC} proxy &
+    ${OC} get namespace ${ns_name} -o json | jq '.spec = {"finalizers":[]}' > temp.json
+    curl -k -H "Content-Type: application/json" -X PUT --data-binary @temp.json 127.0.0.1:8001/api/v1/namespaces/${ns_name}/finalize
+    kill -9 %% || :
+    ${OC} delete namespace ${ns_name} --ignore-not-found --grace-period=0 --force --wait || :
+  fi
+
+}
 
 # ------------------------------------------
 
@@ -834,8 +853,8 @@ function install_nginx_service() {
   ${OC} delete service ${ngnix_name} ${target_namespace:+-n $target_namespace} --ignore-not-found
   ${OC} expose deployment ${ngnix_name} --name=${ngnix_name} ${service_params} ${target_namespace:+-n $target_namespace}
 
-  echo "# Wait 3 minutes for Ngnix service to be ready:"
-  ${OC} rollout status --timeout=3m deployment ${ngnix_name} ${target_namespace:+-n $target_namespace}
+  echo "# Wait 5 minutes for Ngnix service to be ready:"
+  ${OC} rollout status --timeout=5m deployment ${ngnix_name} ${target_namespace:+-n $target_namespace}
   ${OC} describe pod ${ngnix_name} ${target_namespace:+-n $target_namespace}
 
 }
@@ -849,6 +868,17 @@ function create_namespace() {
   local ns=$1
   # Create the namespace with the API directly
   echo -e "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: ${ns}" | ${OC} apply -f -
+
+}
+
+# ------------------------------------------
+
+# Function to get the cluster name from kubeconfig current-context
+function print_current_cluster_name() {
+  # Do not trap_to_debug_commands
+
+  local current_context=$(${OC} config current-context)
+  ${OC} config view -o jsonpath="{.contexts[?(@.name == '$current_context')].context.cluster}"
 
 }
 
@@ -967,10 +997,12 @@ function wait_for_all_machines_ready() {
   local duration=${1:-20m} # Default is 20 minutes
 
   echo "# Wait up to $duration for Machine Config Daemon to be rolled out by openshift-machine-config-operator:"
-  ${OC} rollout status --timeout=$duration ds -n openshift-machine-config-operator machine-config-daemon || machines_status=DOWN
+  local cmd="${OC} rollout status --timeout=$duration ds -n openshift-machine-config-operator machine-config-daemon"
+  watch_and_retry "$cmd" $duration || machines_status=DOWN
 
   echo "# Wait up to $duration for all Machines Config Pool to be updated:"
-  ${OC} wait --timeout=$duration --for condition=updated machineconfigpool --all || machines_status=DOWN
+  cmd="${OC} wait --timeout=$duration --for condition=updated machineconfigpool --all"
+  watch_and_retry "$cmd" $duration || machines_status=DOWN
 
   echo "# Status of Machine Config Pool and all Daemon-Sets:"
   ${OC} get machineconfigpool -o wide || machines_status=DOWN
@@ -1102,19 +1134,34 @@ function build_go_repo() {
 function git_reset_local_repo() {
   trap_to_debug_commands;
 
-  # Optional param: branch or tag to pull (default is latest branch)
-  local branch_or_tag=${1:-$(git remote show origin | awk '/HEAD branch/ { print $3 }')}
+  # Optional param 2: another remote repository to pull from (e.g. fork)
+  local forked_repo=${2}
 
-  git config --get-all remote.origin.fetch
-  git config --unset-all remote.origin.fetch
+  local remote_name="origin"
+
+  if [[ -n "$forked_repo" ]] ; then
+    remote_name="upstream"
+    echo "# Add the a new remote '${remote_name}' to pull from: $forked_repo"
+    git remote -v | grep -w ${remote_name} || git remote add ${remote_name} ${forked_repo}
+    git remote set-url ${remote_name} ${forked_repo}
+  fi
+
+  # Optional param 1: branch or tag to pull (default is latest branch)
+  local branch_or_tag=${1:-$(git remote show ${remote_name} | awk '/HEAD branch/ { print $3 }')}
+
+  git config user.name 'Anonymous'
+  git config user.email '<>'
+  git config --get-all remote.${remote_name}.fetch
+  git config --unset-all remote.${remote_name}.fetch
   git fetch --prune --all
-  git branch -m $branch_or_tag
-  # git branch -u origin $branch_or_tag
-  git remote set-branches --add origin $branch_or_tag
-  git reset --hard $branch_or_tag
-  # git clean -fdx
-  git checkout --theirs .
-  git pull origin $branch_or_tag
+  git branch -m ${branch_or_tag}
+  # git branch -u ${remote_name} ${branch_or_tag}
+  git remote set-branches --add ${remote_name} ${branch_or_tag}
+  # git fetch ${remote_name} ${branch_or_tag}
+  # git reset --hard ${remote_name}/${branch_or_tag}
+  # git checkout --theirs .
+  git reset --hard ${branch_or_tag}
+  git pull -f ${remote_name} ${branch_or_tag}
 
   echo -e "\n# Latest commits in the repository: \n"
   git log --date=short -10 --pretty="%C(Yellow)%h %x09 %C(reset)%ad %x09 %C(Cyan)%an: %x09 %C(reset)%s"
@@ -1229,8 +1276,8 @@ function create_polarion_testrun_result_from_junit() {
     [[ -s "$junit_xml" ]] || { echo "Failed to create Polarion test-run file: '$junit_xml' is missing." ; exit 1 ; }
 
     echo "# Set output xml for Polarion test-run results (without 'junit' substring in filename)"
-    local polarion_testrun_file="$(basename ${junit_xml%%.*})" # Get file name without path and extension
-    polarion_testrun_file="${polarion_testrun_file//junit}polarion_testrun_file.xml" # Remove all "junit" from file name, and append "polarion_testrun_file.xml"
+    local polarion_testrun_file="$(basename ${junit_xml%.*})" # Get file name without path and extension
+    polarion_testrun_file="${polarion_testrun_file//junit}polarion_testrun.xml" # Remove all "junit" from file name, and append "polarion_testrun.xml"
     polarion_testrun_file="$(dirname $junit_xml)/$(basename $polarion_testrun_file)" # Append full path as the original junit_xml file
 
     # Set Polarion test run title

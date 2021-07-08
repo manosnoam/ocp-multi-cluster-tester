@@ -1,23 +1,26 @@
 <?jelly escape-by-default='true'?>
-<j:jelly xmlns:j="jelly:core" xmlns:st="jelly:stapler" xmlns:d="jelly:define">
+<j:jelly xmlns:j="jelly:core" xmlns:st="jelly:stapler" xmlns:d="jelly:define"  xmlns:log="jelly:log" xmlns:util="jelly:util" xmlns:h="org.apache.commons.jelly.tags.http" >
  <body style="font-family: Verdana, Helvetica, sans serif; font-size: 11px; color: black">
   <j:set var="spc" value="&amp;nbsp;&amp;nbsp;" />
-  <!-- <j:set var="buildenv" value="${build.getEnvironment(listener)}"/> -->
+  <j:useBean var="StringUtils" class="org.apache.commons.lang.StringUtils" />
+  <j:set var="buildEnv" value="${build.getEnvironment(listener)}"/>
+  <j:set var="jenkinsUrl" value="${buildEnv.get('JENKINS_URL')}" />
+
   <!-- GENERAL INFO -->
   <table style="font-family: Verdana, Helvetica, sans serif; font-size: 11px; color: black">
-   <!--<tr>
-    <td align="right" style="font-family: Verdana, Helvetica, sans serif; font-size: 11px; color: black">
+   <!-- <tr>
+    <td align="left" style="font-family: Verdana, Helvetica, sans serif; font-size: 11px; color: black">
      <j:choose>
       <j:when test="${build.result=='SUCCESS'}">
-       <img src="${rooturl}static/e59dfe28/images/32x32/blue.gif">
+       <img src="${jenkinsUrl}static/e59dfe28/images/32x32/blue.gif">
        </img>
       </j:when>
       <j:when test="${build.result=='FAILURE'}">
-       <img src="${rooturl}static/e59dfe28/images/32x32/red.gif">
+       <img src="${jenkinsUrl}static/e59dfe28/images/32x32/red.gif">
        </img>
       </j:when>
       <j:otherwise>
-       <img src="${rooturl}static/e59dfe28/images/32x32/yellow.gif">
+       <img src="${jenkinsUrl}static/e59dfe28/images/32x32/yellow.gif">
        </img>
       </j:otherwise>
      </j:choose>
@@ -36,34 +39,52 @@
     <td></td>
     <td>${build.description}</td>
    </tr>
+
+   <!-- HTML REPORT -->
    <tr>
     <td>Test report:</td>
     <td>
-     <a href="${rooturl}${build.url}Test-Report">
-      ${rooturl}${build.url}Test-Report
+     <a href="${jenkinsUrl}${build.url}Test-Report">
+      ${jenkinsUrl}${build.url}Test-Report
      </a>
     </td>
    </tr>
-   <j:if test="${it.isPluginInstalled('blueocean-display-url')}">
-     <!-- <j:set var="blueTestsUrl" value="${buildenv.get('RUN_TESTS_DISPLAY_URL')}"/> -->
-     <!-- <j:set var="blueTestsUrl" value="${it.getAction('org.jenkinsci.plugins.displayurlapi.DisplayURLProvider').get().getTestsURL(run)}" /> -->
-     <j:set var="blueTestsUrl" value="blue/organizations/jenkins/${project.fullName.replaceAll('/', '%2F')}/detail/${project.name}/${build.id}/tests"/>
-     ${logger.println("blueTestsUrl = " + rooturl + blueTestsUrl )}
+
+   <!-- BLUEOCEAN RESULTS -->
+   <j:set var="blueoceanPlugin" value="${it.getAction('io.jenkins.blueocean.service.embedded.BlueOceanUrlAction')}" />
+   ${logger.println("blueoceanPlugin = " + blueoceanPlugin.getUrlName() )}
+   <j:if test="${blueoceanPlugin!=null}">
+     <j:set var="blueTestsUrl" value="${jenkinsUrl}${blueoceanPlugin.getUrlName()}tests"/>
+     ${logger.println("blueTestsUrl = " + blueTestsUrl )}
      <tr>
        <td>Junit:</td>
-       <td>${rooturl}${blueTestsUrl}</td>
+       <td>
+        <a href="${blueTestsUrl}">${blueTestsUrl}</a>
+       </td>
      </tr>
    </j:if>
-   <j:if test="${it.isPluginInstalled('test-results-analyzer')}">
-    <tr>
-     <td>Statistics:</td>
-     <td>
-      <a href="${rooturl}${project.url}test_results_analyzer">
-       ${rooturl}${project.url}test_results_analyzer
-      </a>
-     </td>
-    </tr>
+
+   <!-- TESTS STATISTICS -->
+   <j:if test="${jenkinsUrl!=null}">
+    <j:set var="testResultsAnalyzerUrl" value="${jenkinsUrl}${project.url}test_results_analyzer" />
+    ${logger.println("testResultsAnalyzerUrl (text) = " + testResultsAnalyzerUrl )}
+    <j:new className="java.net.URL" var="URL">
+     <j:arg type="java.lang.String" value="${testResultsAnalyzerUrl}"/>
+    </j:new>
+    <j:set var="connection" value="${URL.openConnection()}" />
+    <j:set var="responseCode" value="${connection.getResponseCode()}" />
+    ${logger.println("testResultsAnalyzer URL = " + connection.getURL() )}
+    <j:if test="${responseCode == '200'}">
+     <tr>
+      <td>Statistics:</td>
+      <td>
+       <a href="${testResultsAnalyzerUrl}">${testResultsAnalyzerUrl}</a>
+      </td>
+     </tr>
+    </j:if>
    </j:if>
+
+   <!-- BUILD DATE -->
    <tr>
     <td>Date of build:</td>
     <td>${it.timestampString}</td>
@@ -71,13 +92,14 @@
    <tr>
     <td>Console log:</td>
     <td>
-     <a href="${rooturl}${build.url}consoleFull">
-      ${rooturl}${build.url}consoleFull
+     <a href="${jenkinsUrl}${build.url}consoleFull">
+      ${jenkinsUrl}${build.url}consoleFull
      </a>
     </td>
    </tr>
   </table>
   <br />
+
   <!-- CHANGE SET -->
   <j:set var="changeSet" value="${build.changeSet}" />
   <j:if test="${changeSet!=null}">
@@ -128,6 +150,7 @@
    </table>
    <br />
   </j:if>
+
   <!-- ARTIFACTS -->
   <j:set var="artifacts" value="${build.artifacts}" />
   <j:if test="${artifacts!=null and artifacts.size()&gt;0}">
@@ -143,7 +166,7 @@
      <td>
       <j:forEach var="f" items="${artifacts}">
        <li>
-        <a href="${rooturl}${build.url}artifact/${f}">
+        <a href="${jenkinsUrl}${build.url}artifact/${f}">
          ${f}
         </a>
        </li>
@@ -153,6 +176,7 @@
    </table>
    <br />
   </j:if>
+
   <!-- MAVEN ARTIFACTS -->
   <j:set var="mbuilds" value="${build.moduleBuilds}" />
   <j:if test="${mbuilds!=null}">
@@ -160,7 +184,7 @@
     <tr>
      <td class="bg1" style="font-family: Verdana, Helvetica, sans serif; font-size: 120%; color: white; background-color: #0000C0">
       <b>
-       BUILD ARTIFACTS
+       MAVEN ARTIFACTS
       </b>
      </td>
     </tr>
@@ -179,7 +203,7 @@
         <td>
          <j:forEach var="f" items="${artifacts}">
           <li>
-           <a href="${rooturl}${mvnbld.url}artifact/${f}">
+           <a href="${jenkinsUrl}${mvnbld.url}artifact/${f}">
             ${f}
            </a>
           </li>
@@ -192,6 +216,7 @@
    </table>
    <br />
   </j:if>
+
   <!-- JUnit TEMPLATE -->
   <j:set var="junitResultList" value="${it.JUnitTestResult}" />
   <j:if test="${junitResultList.isEmpty()!=true}">
@@ -199,7 +224,7 @@
     <tr>
      <td class="bg1" colspan="2" style="font-family: Verdana, Helvetica, sans serif; font-size: 120%; color: white; background-color: #0000C0">
       <b>
-       JUnit Tests
+       Failed Tests
       </b>
      </td>
     </tr>
@@ -210,24 +235,80 @@
         Name: ${packageResult.getName()} Failed: ${packageResult.getFailCount()} test(s), Passed: ${packageResult.getPassCount()} test(s), Skipped: ${packageResult.getSkipCount()} test(s), Total: ${packageResult.getPassCount()+packageResult.getFailCount()+packageResult.getSkipCount()} test(s)
        </td>
       </tr>
-      <j:forEach var="failed_test" items="${packageResult.getFailedTests()}">
+      <j:forEach var="failed_test" items="${packageResult.getFailedTestsSortedByAge()}">
+      <!-- <j:forEach var="failed_test" items="${packageResult.getFailedTests()}"> -->
        <tr bgcolor="white">
         <td class="test_failed" colspan="2" style="font-family: Verdana, Helvetica, sans serif; font-size: 11px; color: red">
-         <b>
-          <li>
-           Failed: ${failed_test.getFullName()}
-          </li>
-         </b>
+         <li>
+          <b>
+           <a href="${jenkinsUrl}${failed_test.url}" style="color: red">
+            ${failed_test.getName()}
+           </a>
+          </b>
+          <j:if test="${!StringUtils.isEmpty(failed_test.getErrorDetails())}">
+           <j:set var="errorMessage" value="${StringUtils.abbreviate(failed_test.getErrorDetails(), 500) }" />
+            <p style="font-family: Verdana, Helvetica, sans serif; font-size: 11px; white-space: pre-line; color: black">
+             ${errorMessage}
+            </p>
+          </j:if>
+        </li>
         </td>
        </tr>
+       <j:set var="lastFailedJunit" value="${failed_test}" />
       </j:forEach>
      </j:forEach>
     </j:forEach>
    </table>
    <br />
-  </j:if>
+
+   <!-- LAST FAILURE -->
+   <j:if test="${lastFailedJunit!=null}">
+    ${logger.println("\n Last failed test = " + lastFailedJunit.getName() )}
+    <table width="100%" style="font-family: Verdana, Helvetica, sans serif; font-size: 11px; color: black">
+     <tr>
+      <td class="bg1" style="font-size: 120%; color: white; background-color: #0000C0">
+       <b>
+        Last Test Failure
+       </b>
+      </td>
+     </tr>
+     <!-- Print test error message if exists -->
+     <j:if test="${!StringUtils.isEmpty(lastFailedJunit.getErrorDetails())}">
+      <tr>
+       <j:set var="errorMessage" value="${StringUtils.abbreviate(lastFailedJunit.getErrorDetails(), 500) }" />
+       <td class="bg2" style="font-size: 110%; color: white; background-color: #9999ff">
+        ${errorMessage}
+       </td>
+      </tr>
+     </j:if>
+     <!-- Print stderr and stacktrace if exists, otherwise print stdout -->
+     <tr>
+      <j:set var="testOutput" value="${lastFailedJunit.getStdout().trim()}" />
+      <j:if test="${lastFailedJunit.getErrorStackTrace()!=null}">
+       ${logger.println("Getting test stacktrace instead of stdout")}
+       <j:set var="testOutput" value="${lastFailedJunit.getErrorStackTrace().trim()}" />
+      </j:if>
+      <j:set var="testOutput" value="${StringUtils.abbreviateMiddle(testOutput, ' ... ', 1000) }" />
+       ${logger.println("Last test output = " + testOutput )}
+      <td class="trace" style="white-space: pre-line; font-family: Courier New; font-size: 11px; color: black">
+       ${testOutput}
+      </td>
+     </tr>
+     <tr>
+       <j:set var="testFailure" value="${lastFailedJunit.getStderr().trim()}" />
+       <j:set var="testFailure" value="${StringUtils.abbreviateMiddle(testFailure, ' ... ', 1000) }" />
+       ${logger.println("Last test failure = " + testFailure )}
+       <td class="trace" style="white-space: pre-line; font-family: Courier New; font-size: 11px; color: black">
+        ${testFailure}
+       </td>
+     </tr>
+    </table>
+    <br />
+   </j:if> <!-- End of LAST FAILURE -->
+  </j:if> <!-- End of JUnit TEMPLATE -->
+
   <!-- COBERTURA TEMPLATE -->
-  <j:set var="coberturaAction" value="${it.coberturaAction}" />
+  <!-- <j:set var="coberturaAction" value="${it.coberturaAction}" />
   <j:if test="${coberturaAction!=null}">
    <j:set var="coberturaResult" value="${coberturaAction.result}" />
    <j:if test="${coberturaResult!=null}">
@@ -342,7 +423,8 @@
     </j:forEach>
    </j:if>
    <br />
-  </j:if>
+  </j:if> -->
+
   <!-- CONSOLE OUTPUT -->
   <!-- <j:getStatic var="resultFailure" field="FAILURE" className="hudson.model.Result" />
   <j:if test="${build.result==resultFailure}">
@@ -364,5 +446,6 @@
    </table>
    <br />
   </j:if> -->
+
  </body>
 </j:jelly>

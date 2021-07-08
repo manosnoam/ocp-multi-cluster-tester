@@ -34,8 +34,13 @@ set +e
 # set +x - To avoid printing commands in debug mode
 set +x
 
-asserts=00; failures=0; suiteDuration=0; content=""
-date="$(which gdate 2>/dev/null || which date)"
+# Temporary files to store the command stdout, stderr and exit code
+export outf=`mktemp`_ju.out
+export errf=`mktemp`_ju.err
+export returnf=`mktemp`_eval_rc.log
+
+# Temporary file to store Testcase tag content, that is added for each new testcase in the junit xml
+newTestCaseTag=`mktemp`_tc_content
 
 export sortTests=""
 export testIndex=0
@@ -49,20 +54,20 @@ else
   exit 1
 fi
 
+# Function to execute command (like bash eval method), witch allows catching seg-faults and use tee
 function eVal() {
   # execute the command, temporarily swapping stderr and stdout so they can be tee'd to separate files,
   # then swapping them back again so that the streams are written correctly for the invoking process
-  echo 0 > "${rcFile}"
+  echo 0 > "${returnf}"
   (
     (
       {
-        trap 'RC=$? ; echo $RC > "${rcFile}" ; echo "+++ sh2ju command exit code: $RC" ; exit $RC' ERR;
-        trap 'RC="$(< $rcFile)" ; echo +++ sh2ju command termination code: $RC" ; exit $RC' HUP INT TERM;
+        trap 'RC=$? ; echo $RC > "${returnf}" ; echo "+++ sh2ju command exit code: $RC" ; exit $RC' ERR;
+        trap 'RC="$(< $returnf)" ; echo +++ sh2ju command termination code: $RC" ; exit $RC' HUP INT TERM;
         set -e; $1;
       } | tee -a ${outf}
     ) 3>&1 1>&2 2>&3 | tee ${errf}
   ) 3>&1 1>&2 2>&3
-
 }
 
 # TODO: Use this function to clean old test results (xmls)
@@ -71,34 +76,29 @@ function juLogClean() {
   find ${juDIR} -maxdepth 1 -name "${juFILE}" -delete
 }
 
-# Function to print text file without special characters and ansi colors
-function printPlainTextFile() {
-  local data_file="$1"
-  while read line ; do
-    echo "$line" | tr -dC '[:print:]\t\n' | ${SED} -r 's:\[[0-9;]+[mK]::g'
-  done < "$data_file"
+# Function to remove special characters and ansi colors from a text file
+function ConvertToPlainTextFile() {
+  local filePath="$1"
+  ${SED} -r -e 's:\[[0-9;]+[mK]::g' -e 's/[^[:print:]\t\n]//g' -i "$filePath"
 }
 
 
 # Execute a command and record its results
 function juLog() {
 
-  # A wrapper for the eval method witch allows catching seg-faults and use tee
-  export rcFile=/tmp/eval_rc.$$.log
-  # :>${rcFile}
-
-  # eval the command sending output to a file
-  export outf=/var/tmp/ju$$.txt
-  export errf=/var/tmp/ju$$-err.txt
-
   # set +e - To avoid breaking the calling script, if juLog has internal error (e.g. in SED)
   set +e
+  set -x
+  
+  # Workaround for "Argument list too long" memory errors
+  # ulimit -s 65536
 
   # In case of script error: Exit with the last return code of eVal()
   export returnCode=0
   trap 'echo "+++ sh2ju exit code: $returnCode" ; exit $returnCode' HUP INT TERM # ERR RETURN EXIT HUP INT TERM
 
-  date="$(which gdate 2>/dev/null || which date || :)"
+  # Initialize testsuite attributes
+  dateTime="$(which gdate 2>/dev/null || which date || :)"
   asserts=00; failures=0; suiteDuration=0; content=""
   export testIndex=$(( testIndex+1 ))
 
@@ -121,7 +121,7 @@ function juLog() {
     class="default"
   fi
 
-  # Set test suite title to class name with spaces (instead of _ ), and with uppercase words
+  # Set testsuite title to class name with spaces (instead of _ ), and with uppercase words
   suiteTitle="${class//_/ }"
   suiteTitle="${suiteTitle[@]^}"
 
@@ -159,36 +159,40 @@ EOF
      shift
   done
 
-  :>${outf}
+  echo "+++ sh2ju running case${testIndex:+ ${testIndex}}: ${class}.${name} "
+  echo "+++ sh2ju working directory: $(pwd)"
+  echo "+++ sh2ju command: ${cmd}"
+  # To print +++ sh2ju debugs also into ${outf}, add:   | tee -a ${outf}
 
-  echo ""                         | tee -a ${outf}
-  echo "+++ sh2ju running case${testIndex:+ ${testIndex}}: ${class}.${name} " # | tee -a ${outf}
-  echo "+++ sh2ju working directory: $(pwd)"           # | tee -a ${outf}
-  echo "+++ sh2ju command: ${cmd}"            # | tee -a ${outf}
+  # Clear content of the temporary files
+  : > ${outf}
+  : > ${errf}
+  : > ${returnf}
 
-  testStartTime="$(${date} +%s.%N)"
+  # Save datetime before executing the command
+  testStartTime="$(${dateTime} +%s.%N)"
 
+  ### Calling eVal() function that will run the command and save output to the temporary files:
+  # Function stdout > ${outf}
+  # Function stderr > ${errf}
+  # Function return (exit) code > ${returnf}
   eVal "${cmd}"
-  returnCode="$([[ -s "$rcFile" ]] && cat "$rcFile" || echo "0")"
-  rm -f "${rcFile}"
+  returnCode="$([[ -s "$returnf" ]] && cat "$returnf" || echo "0")"
 
-  testEndTime="$(${date} +%s.%N)"
+  # Save datetime after executing the command
+  testEndTime="$(${dateTime} +%s.%N)"
 
-  # Workaround for "Argument list too long" memory errors
-  # ulimit -s 65536
-
-  # Save output and error messages without special characters (e.g. ansi colors), and delete their temp files
-  outMsg="$(printPlainTextFile "$outf")"
-  rm -f ${outf} || :
-  errMsg="$(printPlainTextFile "$errf")"
-  rm -f ${errf} || :
+  # Convert $outf (stdout file) and $errf (stderr file) to plain text files without special characters (e.g. ansi colors)
+  ConvertToPlainTextFile "${outf}" || :
+  ConvertToPlainTextFile "${errf}" || :
 
   # Set the appropriate error, based in the exit code and the regex
   [[ "${returnCode}" != 0 ]] && testStatus=FAILED || testStatus=PASSED
   # echo "+++ sh2ju exit code: ${returnCode} (testStatus=$testStatus)"
   if [[ ${testStatus} = PASSED ]] && [[ -n "${ereg:-}" ]]; then
-      H=$(echo "${outMsg}" | grep -E ${icase} "${ereg}")
-      [[ -n "${H}" ]] && testStatus=FAILED
+      if grep -q -E ${icase} "${ereg}" "${outf}" ; then
+        testStatus=FAILED
+      fi
   elif [[ ${testStatus} = FAILED ]] ; then
     failures=$((failures+1))
   fi
@@ -209,48 +213,68 @@ EOF
     testTitle="${zero_padding:(-${#digits})} : ${testTitle}"
   fi
 
-  # write the junit xml report
-  ## system-out or system-err tag
+  # Write the junit xml report
+
+  # Update testcase tag content file (not saving data in variables due to "Argument list too long" potential error)
+  cat <<-EOF > ${newTestCaseTag}
+      <testcase assertions="1" name="${testTitle}" time="${testDuration}" classname="${class//./-}">
+EOF
+
+  # system-out tag if testcase passed
   if [[ ${testStatus} = PASSED ]] ; then
-    output="
-    <system-out><![CDATA[${outMsg}]]></system-out>
-    "
+    echo '    <system-out> <![CDATA[' >> ${newTestCaseTag}
+    cat ${outf} >> ${newTestCaseTag}
+    echo '    ]]> </system-out>' >> ${newTestCaseTag}
+
+  # Or failure tag if testcase failed
   else
-    output="
-    <failure type=\"ScriptError\" message=\"Failure in ${class}.${name}\">
-    <![CDATA[${outMsg}]]>
-    </failure>
-    <system-err><![CDATA[${errMsg}]]></system-err>
-    "
+    # Get failure summary from $errf as one line, by:
+    # Removing empty lines + getting last line + replacing invalid xml characters
+    failure_summary=$(grep "\S" "$errf" | tail -2 | sed -e "s/\"/'/g" -e 's/</&lt;/g' -e 's/&/&amp;/g')
+
+    echo "    <failure type=\"ScriptError\" message=\"${failure_summary}\"> <![CDATA[" >> ${newTestCaseTag}
+    cat ${outf} >> ${newTestCaseTag}
+    echo '    ]]> </failure>' >> ${newTestCaseTag}
+
+    ## system-err tag in addition to failure tag
+    echo '    <system-err> <![CDATA[' >> ${newTestCaseTag}
+    cat ${errf} >> ${newTestCaseTag}
+    echo '    ]]> </system-err>' >> ${newTestCaseTag}
+
   fi
 
-  ## testcase tag
-  content="${content}
-    <testcase assertions=\"1\" name=\"${testTitle}\" time=\"${testDuration}\" classname=\"${class//./-}\">
-    ${output}
-    </testcase>
-  "
-  ## testsuite block
+  ## testcase tag end
+  echo '      </testcase>' >> ${newTestCaseTag}
 
+  # Testsuite block
   if [[ -e "${juDIR}/${juFILE}" ]]; then
-    # file exists. first update the failures count
-    failCount=$(${SED} -n "s/.*testsuite.*failures=\"\([0-9]*\)\".*/\1/p" "${juDIR}/${juFILE}")
-    failures=$((failCount+failures))
+
+    # Get the number of failures in existing junit.xml, and append current failures counter to it
+    failCount=$(grep -Po -m1 'testsuite.*failures="\K[0-9]+' "${juDIR}/${juFILE}")
+    [[ ! "$failCount" =~ ^[0-9]+$ ]] || failures=$((failCount+failures))
+
+    # Update the number of failures and errors in testsuite tag
     ${SED} -i "0,/failures=\"${failCount}\"/ s/failures=\"${failCount}\"/failures=\"${failures}\"/" "${juDIR}/${juFILE}"
     ${SED} -i "0,/errors=\"${failCount}\"/ s/errors=\"${failCount}\"/errors=\"${failures}\"/" "${juDIR}/${juFILE}"
 
-    # file exists. Need to append to it. If we remove the testsuite end tag, we can just add it in after.
-    ${SED} -i "s^</testsuite>^^g" "${juDIR}/${juFILE}" ## remove testSuite so we can add it later
+    # In order to append the new testcase tag in the testsuite, remove the closing testsuite and testsuites end tags
+    ${SED} -i "s^</testsuite>^^g" "${juDIR}/${juFILE}"
     ${SED} -i "s^</testsuites>^^g" "${juDIR}/${juFILE}"
-    cat <<EOF >> "$juDIR/${juFILE}"
-     ${content:-}
+
+    # Append the new testcase tag
+    cat "${newTestCaseTag}" >> "${juDIR}/${juFILE}"
+
+    # Testsuite (and testsuites) tags end
+    cat <<-EOF >> "${juDIR}/${juFILE}"
     </testsuite>
 </testsuites>
 EOF
 
     # Update suite summary on the first <testsuite> tag:
-    ${SED} -e "0,/<testsuite .*>/s/<testsuite .*>/\
-    <testsuite name=\"${suiteTitle}\" tests=\"${testIndex}\" assertions=\"${assertions:-}\" failures=\"${failures}\" errors=\"${failures}\" time=\"${suiteDuration}\">/" -i "${juDIR}/${juFILE}"
+    ${SED} -e "0,/<testsuite .*>/s/<testsuite .*>\s*/\
+    <testsuite name=\"${suiteTitle}\" tests=\"${testIndex}\" assertions=\"${assertions:-}\" failures=\"${failures}\" errors=\"${failures}\" time=\"${suiteDuration}\">/" \
+    -i "${juDIR}/${juFILE}"
+
   fi
 
   # Set returnCode=0, if missing or equals 5
