@@ -1,3 +1,6 @@
+## This project has been relocated to: 
+### https://github.com/redhat-openshift/acm-submariner-tester
+
 # ocp-multi-cluster-tester
 Interactive script to create Openshift multi-clusters on private and public clouds, and test inter-connectivity with Submariner.
 
